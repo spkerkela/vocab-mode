@@ -162,9 +162,16 @@ light and dark backgrounds.
 
 `vocab-mode` aims to work on top of any major mode that displays readable text:
 `text-mode`, `markdown-mode`, `org-mode`, `nov-mode`, `eww-mode` and others.
-Compatibility with complex major modes may vary in v0.1; modes that regenerate
-their buffer contents, or that bind the same single letters, may need
-`vocab-refresh-buffer` or a customized keymap.
+
+`nov-mode` and `eww-mode` replace the whole buffer every time they render
+another chapter or page, which throws the annotations away with it. Both are
+listed in `vocab-render-hooks`, so `vocab-mode` rebuilds from their after-render
+hook: turn the page and the new text is annotated, with vocabulary re-read from
+the database so a word you marked in chapter one is already known in chapter
+two. Add other rendering modes to that alist the same way.
+
+Compatibility with complex major modes may otherwise vary in v0.1; a mode that
+regenerates its buffer without such a hook needs `vocab-refresh-buffer`.
 
 Narrowing is respected: only the accessible portion of the buffer is scanned and
 navigated, and the mode never widens behind your back.

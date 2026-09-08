@@ -10,6 +10,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'eww)
 (require 'vocab-mode)
 
 (defmacro vocab-mode-test--with-db (&rest body)
@@ -253,6 +254,88 @@
       (should (equal (vocab-mode-test--statuses)
                      '(("Der" . unknown) ("Hund" . known) ("Hund" . known)
                        ("den" . unknown) ("Hund" . known)))))))
+
+;;;; Re-rendering major modes
+
+(ert-deftest vocab-mode-test-registers-render-hook ()
+  "Modes that re-render get a buffer-local hook, and lose it on disable."
+  (vocab-mode-test--with-db
+    (with-temp-buffer
+      (eww-mode)
+      (let ((inhibit-read-only t)) (insert "Der Hund."))
+      (setq vocab-language "german")
+      (vocab-mode 1)
+      (should (eq vocab--render-hook 'eww-after-render-hook))
+      (should (memq #'vocab--after-render eww-after-render-hook))
+      (should (local-variable-p 'eww-after-render-hook))
+      (vocab-mode -1)
+      (should-not vocab--render-hook)
+      (should-not (memq #'vocab--after-render eww-after-render-hook)))))
+
+(ert-deftest vocab-mode-test-no-render-hook-in-ordinary-buffers ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (should-not vocab--render-hook)
+      (should-not (local-variable-p 'eww-after-render-hook)))))
+
+(ert-deftest vocab-mode-test-re-render-restores-annotations ()
+  "A mode replacing the whole buffer must end up correctly annotated."
+  (vocab-mode-test--with-db
+    (with-temp-buffer
+      (eww-mode)
+      (let ((inhibit-read-only t))
+        (insert "Der Hund sieht den Hund."))
+      (goto-char (point-min))
+      (setq vocab-language "german")
+      (vocab-mode 1)
+      (vocab-mode-test--goto-word "Hund")
+      (vocab-mark-known)
+      ;; Render another page into the same buffer, the way eww and nov do.
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Ein Hund und ein Baum."))
+      (run-hooks 'eww-after-render-hook)
+      (should (equal (vocab-mode-test--statuses)
+                     '(("Ein" . unknown) ("Hund" . known) ("und" . unknown)
+                       ("ein" . unknown) ("Baum" . unknown)))))))
+
+(ert-deftest vocab-mode-test-re-render-picks-up-other-buffers-marks ()
+  "Each render re-reads the database, so marks made elsewhere show up."
+  (vocab-mode-test--with-db
+    (with-temp-buffer
+      (eww-mode)
+      (let ((inhibit-read-only t)) (insert "Der Baum."))
+      (setq vocab-language "german")
+      (vocab-mode 1)
+      (should (eq (vocab-status "baum") 'unknown))
+      ;; Another buffer marks the word.
+      (vocab-db-set-status "german" "baum" 'known)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Der Baum steht."))
+      (run-hooks 'eww-after-render-hook)
+      (should (eq (vocab-status "baum") 'known))
+      (should (equal (vocab-mode-test--statuses)
+                     '(("Der" . unknown) ("Baum" . known)
+                       ("steht" . unknown)))))))
+
+;;;; Cyrillic
+
+(ert-deftest vocab-mode-test-russian ()
+  (vocab-mode-test--with-db
+    (with-temp-buffer
+      (text-mode)
+      (insert "Он медленно шёл домой. «Здравствуйте!» — сказал ЁЖИК.")
+      (goto-char (point-min))
+      (setq vocab-language "russian")
+      (vocab-mode 1)
+      (should (equal (mapcar #'car (vocab-mode-test--statuses))
+                     '("Он" "медленно" "шёл" "домой" "Здравствуйте"
+                       "сказал" "ЁЖИК")))
+      (vocab-mode-test--goto-word "ЁЖИК")
+      (vocab-mark-known)
+      (should (eq (vocab-db-get-status "russian" "ёжик") 'known))
+      (should (eq (vocab-status "Ёжик") 'known)))))
 
 ;;;; Persistence across buffers
 

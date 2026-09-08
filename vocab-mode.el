@@ -79,6 +79,18 @@ Values are the symbols `unknown', `learning' and `known'.  The cache
 exists so that scanning does not perform one database lookup per word
 occurrence.")
 
+(defvar vocab-render-hooks
+  '((nov-mode . nov-post-html-render-hook)
+    (eww-mode . eww-after-render-hook))
+  "Alist mapping a major mode to the hook it runs after rendering.
+These modes replace the whole buffer when they render another chapter or
+page, which throws away the annotations with it, so `vocab-mode' rebuilds
+them from that hook.  Entries are matched with `derived-mode-p'.")
+
+(defvar-local vocab--render-hook nil
+  "The after-render hook of this buffer's major mode, when it has one.
+Set from `vocab-render-hooks' while `vocab-mode' is enabled.")
+
 (defvar vocab-mode-map (make-sparse-keymap)
   "Keymap for `vocab-mode'.
 
@@ -287,9 +299,25 @@ another buffer are picked up here."
         (forward-char 1))
       (cons start (point)))))
 
-(defun vocab--after-change (beg end _pre-length)
-  "Rescan the words touched by the change between BEG and END."
+(defun vocab--render-hook-for-mode ()
+  "Return the after-render hook for the current major mode, or nil."
+  (cdr (seq-find (lambda (entry) (derived-mode-p (car entry)))
+                 vocab-render-hooks)))
+
+(defun vocab--after-render ()
+  "Rebuild annotations after the major mode re-rendered the buffer.
+Vocabulary states are re-read from the database, so a word marked while
+reading one chapter is already known in the next."
   (when (and vocab-mode vocab--cache)
+    (with-demoted-errors "vocab-mode: %S"
+      (vocab-refresh-buffer))))
+
+(defun vocab--after-change (beg end _pre-length)
+  "Rescan the words touched by the change between BEG and END.
+Buffers whose major mode renders into them are left to
+`vocab--after-render': their content arrives in many small insertions
+that are about to be replaced wholesale, so scanning each one is waste."
+  (when (and vocab-mode vocab--cache (null vocab--render-hook))
     (with-demoted-errors "vocab-mode: %S"
       (save-match-data
         (let ((region (vocab--changed-region beg end)))
@@ -387,12 +415,18 @@ STATUS `unknown' deletes the stored row instead of storing a value."
   (setq vocab-language (downcase vocab-language))
   (vocab-db-open)
   (setq vocab--cache (make-hash-table :test #'equal))
+  (setq vocab--render-hook (vocab--render-hook-for-mode))
+  (when vocab--render-hook
+    (add-hook vocab--render-hook #'vocab--after-render nil t))
   (add-hook 'after-change-functions #'vocab--after-change nil t)
   (vocab--scan-region (point-min) (point-max)))
 
 (defun vocab--disable ()
   "Tear down `vocab-mode' in the current buffer, leaving the text alone."
   (remove-hook 'after-change-functions #'vocab--after-change t)
+  (when vocab--render-hook
+    (remove-hook vocab--render-hook #'vocab--after-render t)
+    (setq vocab--render-hook nil))
   (save-restriction
     (widen)
     (vocab--remove-overlays (point-min) (point-max)))

@@ -30,7 +30,17 @@ are not supported.
 
 ## Installation
 
-Development installation:
+With `use-package` on Emacs 30, or `package-vc-install` on 29:
+
+```elisp
+(use-package vocab-mode
+  :vc (:url "https://github.com/spkerkela/vocab-mode" :rev :newest)
+  :commands (vocab-mode))
+```
+
+`M-x package-vc-upgrade RET vocab-mode` pulls later changes.
+
+Development installation, from a checkout:
 
 ```elisp
 (add-to-list 'load-path "/path/to/vocab-mode")

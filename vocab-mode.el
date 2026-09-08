@@ -466,10 +466,26 @@ argument REFRESH, ask the backend again instead of reusing the cache."
 
 ;;;; Mode
 
+(defun vocab--language-candidates ()
+  "Return the languages worth offering for completion, sorted.
+Those already in the database, plus any entered earlier this session."
+  (sort (delete-dups (append (vocab-db-languages)
+                             (copy-sequence vocab-language-history)))
+        #'string<))
+
 (defun vocab--read-language ()
-  "Prompt for and return the target language of this buffer."
-  (let ((language (string-trim
-                   (read-string "Language: " nil 'vocab-language-history))))
+  "Prompt for and return the target language of this buffer.
+
+Completion offers the languages already in use and defaults to the last
+one entered, but the set is not fixed: any string is accepted, and case
+does not matter, since `Suomi' and `suomi' are one language."
+  (let* ((candidates (vocab--language-candidates))
+         (default (or (car vocab-language-history) (car candidates)))
+         (completion-ignore-case t)
+         (language (string-trim
+                    (completing-read (format-prompt "Language" default)
+                                     candidates nil nil nil
+                                     'vocab-language-history default))))
     (when (string-empty-p language)
       (user-error "A target language is required"))
     (downcase language)))

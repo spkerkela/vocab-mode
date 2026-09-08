@@ -60,6 +60,12 @@ disabling and re-enabling the mode. Any simple identifier works: `german`,
 `spanish`, `french`, `finnish`. Vocabulary is language-specific, so German
 `die` and French `die` are unrelated entries.
 
+The prompt completes over the languages you already use — the set grows by
+itself, and the default is the last one you entered, so `RET` keeps you in the
+same language. Nothing is validated: type a language that is new and it is
+accepted. Case is irrelevant throughout, in what you type and what completes, so
+`English`, `english` and `ENGLISH` are one language, not three.
+
 You can also set it ahead of time, for instance as a file-local variable:
 
 ```elisp

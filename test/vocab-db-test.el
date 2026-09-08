@@ -88,6 +88,14 @@ WHERE type = 'table' AND name = 'vocabulary'")
     (should (eq (vocab-db-get-status "german" "die") 'known))
     (should (eq (vocab-db-get-status "french" "die") 'learning))))
 
+(ert-deftest vocab-db-test-languages ()
+  (vocab-db-test--with-db
+    (should-not (vocab-db-languages))
+    (vocab-db-set-status "russian" "ёжик" 'known)
+    (vocab-db-set-status "german" "hund" 'known)
+    (vocab-db-set-status "german" "katze" 'learning)
+    (should (equal (vocab-db-languages) '("german" "russian")))))
+
 (ert-deftest vocab-db-test-batched-lookup ()
   (vocab-db-test--with-db
     (vocab-db-set-status "german" "der" 'known)

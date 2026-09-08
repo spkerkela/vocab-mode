@@ -170,6 +170,14 @@ WHERE language = ? AND word IN (%s)" placeholders)
               (when status (puthash (car row) status table)))))))
     table))
 
+(defun vocab-db-languages (&optional file)
+  "Return the languages that have vocabulary stored, sorted alphabetically.
+FILE defaults to `vocab-database-file'."
+  (let ((db (vocab-db-open file)))
+    (vocab-db--protect "Reading vocabulary"
+      (mapcar #'car (sqlite-select
+                     db "SELECT DISTINCT language FROM vocabulary ORDER BY language")))))
+
 (defun vocab-db-set-status (language word status &optional file)
   "Persist STATUS for WORD in LANGUAGE.
 STATUS must be `learning' or `known'; `unknown' is represented by the

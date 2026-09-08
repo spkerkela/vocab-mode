@@ -528,6 +528,85 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
       (vocab-refresh-buffer)
       (should (= 5 (length (vocab--overlays)))))))
 
+;;;; Language prompt
+
+(defmacro vocab-mode-test--answering-prompt (answer &rest body)
+  "Run BODY with the language prompt answered by ANSWER.
+Binds `vocab-mode-test--prompt-args' to the arguments it was called with."
+  (declare (indent 1) (debug t))
+  `(let (vocab-mode-test--prompt-args
+         (vocab-language-history nil))
+     (cl-letf (((symbol-function 'completing-read)
+                (lambda (prompt collection &rest _)
+                  (setq vocab-mode-test--prompt-args
+                        (list :prompt prompt :collection collection
+                              :ignore-case completion-ignore-case))
+                  ,answer)))
+       ,@body)))
+
+(ert-deftest vocab-mode-test-language-prompt-completes-known-languages ()
+  (vocab-mode-test--with-db
+    (vocab-db-set-status "russian" "ёжик" 'known)
+    (vocab-db-set-status "german" "hund" 'known)
+    (vocab-mode-test--answering-prompt "finnish"
+      (should (equal (vocab--read-language) "finnish"))
+      (should (equal (plist-get vocab-mode-test--prompt-args :collection)
+                     '("german" "russian")))
+      ;; Completion must not care about case.
+      (should (plist-get vocab-mode-test--prompt-args :ignore-case)))))
+
+(ert-deftest vocab-mode-test-language-prompt-is-case-insensitive ()
+  "English and english are one language, however it was typed."
+  (vocab-mode-test--with-db
+    (vocab-mode-test--answering-prompt "English"
+      (should (equal (vocab--read-language) "english")))
+    (vocab-mode-test--answering-prompt "  ENGLISH  "
+      (should (equal (vocab--read-language) "english")))
+    ;; And the same holds for a value set by hand or by a file variable.
+    (with-temp-buffer
+      (text-mode)
+      (insert "The dog.")
+      (setq vocab-language "English")
+      (vocab-mode 1)
+      (should (equal vocab-language "english"))
+      (vocab-mode-test--goto-word "dog")
+      (vocab-mark-known)
+      (should (eq (vocab-db-get-status "english" "dog") 'known)))))
+
+(ert-deftest vocab-mode-test-language-prompt-defaults-to-last-used ()
+  (vocab-mode-test--with-db
+    (vocab-db-set-status "german" "hund" 'known)
+    (let ((vocab-language-history '("russian")))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest args)
+                   (should (string-match-p "russian" prompt))
+                   ;; The default is offered, and history is a candidate too.
+                   (should (member "russian" collection))
+                   (should (member "german" collection))
+                   (car (last args)))))
+        (should (equal (vocab--read-language) "russian"))))))
+
+(ert-deftest vocab-mode-test-language-prompt-rejects-nothing-typed ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--answering-prompt "   "
+      (should-error (vocab--read-language) :type 'user-error))))
+
+(ert-deftest vocab-mode-test-enabling-prompts-only-without-a-language ()
+  (vocab-mode-test--with-db
+    (with-temp-buffer
+      (text-mode)
+      (insert "Der Hund.")
+      (vocab-mode-test--answering-prompt "German"
+        (vocab-mode 1)
+        (should (equal vocab-language "german"))
+        (should (plist-get vocab-mode-test--prompt-args :prompt)))
+      ;; Re-enabling reuses the buffer's language instead of asking again.
+      (vocab-mode -1)
+      (vocab-mode-test--answering-prompt "french"
+        (vocab-mode 1)
+        (should (equal vocab-language "german"))
+        (should-not vocab-mode-test--prompt-args)))))
+
 ;;;; Translation
 
 (ert-deftest vocab-mode-test-translate-requires-a-backend ()

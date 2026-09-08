@@ -200,6 +200,12 @@ Language:
 Accept simple identifiers such as `german`, `spanish`, `french`, or
 `finnish`. Do not validate against a predefined list in v0.1.
 
+Prompt with `completing-read`, so the standard completion machinery
+applies. Offer the languages already in use, defaulting to the last one
+entered, but accept anything typed. Matching is case-insensitive and
+languages are stored downcased: `English` and `english` are one
+language.
+
 Vocabulary is language-specific. `("german", "die")` and
 `("french", "die")` are unrelated entries.
 

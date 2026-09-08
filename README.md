@@ -7,10 +7,10 @@ document reader itself.
 
 It is a minor mode: whatever major mode is already showing your text keeps
 running, and `vocab-mode` layers vocabulary annotations on top. Words you have
-never marked are highlighted as unknown, words you are working on are
-highlighted as learning, and words you know look completely ordinary. Your
-vocabulary is stored in one SQLite database, per language, shared by every
-buffer.
+never marked are highlighted as unknown, words you are learning are shaded by
+how well you know them, and words you know look completely ordinary. Phrases
+count as vocabulary too. Your vocabulary, and the translations you look up, are
+stored in one SQLite database, per language, shared by every buffer.
 
 The buffer text is never modified. Annotations are overlays, so read-only
 buffers work, and disabling the mode leaves the buffer exactly as it was.
@@ -91,7 +91,10 @@ available through `M-x`; bind what suits you:
   (keymap-set vocab-mode-map "C-c v l" #'vocab-mark-learning)
   (keymap-set vocab-mode-map "C-c v u" #'vocab-mark-unknown)
   (keymap-set vocab-mode-map "C-c v s" #'vocab-show-word)
-  (keymap-set vocab-mode-map "C-c v r" #'vocab-refresh-buffer))
+  (keymap-set vocab-mode-map "C-c v t" #'vocab-translate-word)
+  (keymap-set vocab-mode-map "C-c v r" #'vocab-refresh-buffer)
+  (dolist (level '("1" "2" "3" "4"))
+    (keymap-set vocab-mode-map (concat "C-c v " level) #'vocab-mark-level)))
 ```
 
 A prefix like this works in editable buffers too, where bare letters cannot.
@@ -121,25 +124,29 @@ typing is never shadowed. Pass your own keymap to bind them somewhere else.
 
 ### Commands
 
-| Command                   | Description                                             |
-|---------------------------|---------------------------------------------------------|
-| `vocab-mode`              | Toggle the mode in the current buffer                   |
-| `vocab-show-word`         | Echo the word at point and its state                    |
-| `vocab-mark-known`        | Store the word at point as known                        |
-| `vocab-mark-learning`     | Store the word at point as learning                     |
-| `vocab-mark-unknown`      | Delete the word's stored row, returning it to unknown   |
-| `vocab-next-unknown`      | Jump to the next unknown word, wrapping around          |
-| `vocab-previous-unknown`  | Jump to the previous unknown word, wrapping around      |
-| `vocab-mark-level`        | Mark the word or phrase with familiarity level 1-4      |
-| `vocab-translate-word`    | Show a translation of the word or phrase at point       |
-| `vocab-forget-translation`| Delete the stored translation of the word at point      |
-| `vocab-refresh-word`      | Refresh every occurrence of one word                    |
-| `vocab-refresh-buffer`    | Rescan the buffer and re-read states from the database  |
-| `vocab-clear-annotations` | Remove every annotation owned by `vocab-mode`           |
+Every command that acts on a word acts on the phrase at point instead when
+there is one, or on the region when one is active.
 
-Marking a word updates every occurrence of it in the current buffer
-immediately: `Hund`, `HUND` and `hund` all normalize to `hund`, so marking one
-of them marks all of them.
+| Command                     | Description                                            |
+|-----------------------------|--------------------------------------------------------|
+| `vocab-mode`                | Toggle the mode in the current buffer                  |
+| `vocab-show-word`           | Echo the word at point and its state                   |
+| `vocab-mark-level`          | Mark it with familiarity level 1-4                     |
+| `vocab-mark-learning`       | Mark it level 1, a word just met                       |
+| `vocab-mark-known`          | Mark it known                                          |
+| `vocab-mark-unknown`        | Delete its stored row, returning it to unknown         |
+| `vocab-next-unknown`        | Jump to the next unknown word, wrapping around         |
+| `vocab-previous-unknown`    | Jump to the previous unknown word, wrapping around     |
+| `vocab-translate-word`      | Show a translation, fetching one if needed             |
+| `vocab-forget-translation`  | Delete its stored translation                          |
+| `vocab-clear-translation-cache` | Drop in-memory translations, keeping stored ones   |
+| `vocab-refresh-word`        | Refresh every occurrence of one entry                  |
+| `vocab-refresh-buffer`      | Rescan the buffer and re-read states from the database |
+| `vocab-clear-annotations`   | Remove every annotation owned by `vocab-mode`          |
+
+Marking updates every occurrence in the current buffer immediately: `Hund`,
+`HUND` and `hund` all normalize to `hund`, so marking one of them marks all of
+them.
 
 Other buffers pick up changes the next time they are enabled, re-enabled, or
 refreshed with `vocab-refresh-buffer`.
@@ -150,8 +157,9 @@ refreshed with `vocab-refresh-buffer`.
 one. Set `vocab-translate-function` and `M-x vocab-translate-word` starts
 working; leave it nil and the command simply says so.
 
-The function is called with the surface word, the buffer's language, and a
-callback, and must call the callback with a string, or nil when it has nothing.
+The function is called with the surface word or phrase, the buffer's language,
+and a callback, and must call the callback with a string, or nil when it has
+nothing.
 It may answer immediately or much later, so a dictionary process, a web lookup
 or an LLM all fit without freezing Emacs:
 
@@ -237,7 +245,11 @@ it, matched case-insensitively like everything else.
 ```
 
 The database and its parent directory are created when first needed, and an
-existing database is never dropped or recreated.
+existing database is never dropped or recreated. It holds both the vocabulary
+and the translations, so copying that one file moves everything.
+
+`vocab-translate-function` chooses the translation backend, and is nil until you
+set one; see [Translation](#translation).
 
 `vocab-unknown-face` sets a wavy underline and the four `vocab-level-N-face`
 faces set progressively fainter backgrounds, so the underlying major mode's
@@ -256,7 +268,7 @@ hook: turn the page and the new text is annotated, with vocabulary re-read from
 the database so a word you marked in chapter one is already known in chapter
 two. Add other rendering modes to that alist the same way.
 
-Compatibility with complex major modes may otherwise vary in v0.1; a mode that
+Compatibility with complex major modes may otherwise vary; a mode that
 regenerates its buffer without such a hook needs `vocab-refresh-buffer`.
 
 Narrowing is respected: only the accessible portion of the buffer is scanned and
@@ -266,9 +278,14 @@ navigated, and the mode never widens behind your back.
 
 Words are runs of letters (`[[:alpha:]]`), so Unicode text works and punctuation
 is never included: in `"Hallo, Welt!"`, point on either word gives `Hallo` or
-`Welt`. Normalization is `downcase` only — no stemming, lemmatization, or
-morphological analysis in v0.1. Both live behind `vocab-word-at-point` and
-`vocab-normalize-word` so that language-specific behaviour can be added later.
+`Welt`. Cyrillic, Greek and the rest work the same way.
+
+Normalization is `downcase` plus collapsing whitespace, which is what lets a
+phrase keep one key however the text happened to wrap. There is no stemming,
+lemmatization, or morphological analysis, so in English `walk` and `walked` are
+two entries, and in German so are `Hund` and `Hunde`. Both steps live behind
+`vocab-word-at-point` and `vocab-normalize-word` so that language-specific
+behaviour can be added later.
 
 ## Tests
 
@@ -280,11 +297,12 @@ emacs -Q --batch -L . -L test \
 
 The suite uses temporary databases and never touches your real vocabulary file.
 
-## Out of scope in v0.1
+## Out of scope
 
 No document importing, dictionary or LLM backend of its own, EPUB/PDF parsing,
 audio, flashcards or spaced repetition, lemmatization, encounter statistics, or
-synchronization.
+synchronization. Vocabulary is per database: to share it between machines, copy
+or sync the file.
 
 ## License
 

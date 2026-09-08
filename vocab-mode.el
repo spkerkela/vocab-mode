@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Simo-Pekka Kerkelä
 
 ;; Author: Simo-Pekka Kerkelä
-;; Version: 0.1
+;; Version: 0.2
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: languages, convenience
 

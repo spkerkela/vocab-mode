@@ -1,4 +1,4 @@
-# vocab-mode v0.1 --- Implementation Specification
+# vocab-mode --- Implementation Specification
 
 ## Summary
 
@@ -47,17 +47,21 @@ The user should be able to:
 
 ## Explicitly out of scope
 
-Do not implement in v0.1:
+Do not implement:
 
 -   a custom document reader or document importing;
--   translation, dictionary APIs, or LLM calls;
+-   a translation, dictionary or LLM backend of its own: `vocab-mode`
+    provides the socket, the user's configuration provides the backend,
+    and the package depends on neither;
 -   EPUB/PDF parsing or web fetching;
 -   audio, TTS, or subtitles;
 -   flashcards or spaced repetition;
 -   stemming, lemmatization, or morphological analysis;
--   phrase or multi-word tracking;
 -   encounter counts or statistics;
 -   accounts, cloud synchronization, streaks, or gamification.
+
+Vocabulary lives in one database file; sharing it between machines is
+copying that file, not a feature of the mode.
 
 If another Emacs mode already displays content, `vocab-mode` should aim
 to work on top of it rather than reimplementing that functionality.
@@ -348,13 +352,12 @@ Provide:
 vocab-normalize-word
 ```
 
-For v0.1:
-
 ``` text
-normalized-word = downcase(surface-word)
+normalized-word = collapse-whitespace(downcase(surface-word))
 ```
 
-Thus `Haus`, `haus`, and `HAUS` all map to `haus`.
+Thus `Haus`, `haus`, and `HAUS` all map to `haus`, and a phrase maps to
+one key however the text it was read from happened to wrap.
 
 Do not perform stemming, lemmatization, or morphological analysis. Keep
 normalization behind a dedicated function so language-specific behavior

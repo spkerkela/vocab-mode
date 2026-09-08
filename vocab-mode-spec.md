@@ -219,11 +219,11 @@ lifetime, including after disabling and re-enabling `vocab-mode`.
 
 ## Vocabulary states
 
-v0.1 has exactly three logical states:
+States are `unknown`, four familiarity levels, and `known`:
 
 ``` text
 unknown
-learning
+1  2  3  4
 known
 ```
 
@@ -232,15 +232,31 @@ known
 Absence from the database means `unknown`. Unknown words receive the
 most prominent annotation. They do not require database rows.
 
-### Learning
+### Levels
 
-Explicitly marked by the user, stored persistently, and visually
-distinct from unknown.
+Explicitly marked by the user and stored persistently. Level 1 is a word
+just met and level 4 one nearly known. Each level is visually distinct
+and less prominent than the one below it, so highlighting fades out as a
+word is learned. A word may move in either direction.
+
+Statuses written by earlier versions must keep working and must not be
+rewritten on disk: `learning` reads as level 1.
 
 ### Known
 
 Explicitly marked by the user and stored persistently. Known words
 receive no `vocab-mode`-specific highlighting.
+
+## Entries and phrases
+
+An entry is a single word or a multi-word phrase; a phrase is an entry
+whose normalized text contains a space, so both share one table.
+
+Marking acts on the active region when there is one, which is how
+phrases are created. Phrases are matched case-insensitively and
+tolerate the whitespace of a line break. They are annotated above the
+words they cover, and those words keep their own independent states.
+With point inside a phrase, commands act on the phrase.
 
 ------------------------------------------------------------------------
 
@@ -279,10 +295,19 @@ CREATE TABLE vocabulary (
 );
 ```
 
+``` sql
+CREATE TABLE translations (
+    language TEXT NOT NULL,
+    word TEXT NOT NULL,
+    translation TEXT NOT NULL,
+    PRIMARY KEY (language, word)
+);
+```
+
 Valid stored statuses:
 
 ``` text
-learning
+1  2  3  4
 known
 ```
 
@@ -388,7 +413,7 @@ Define customizable faces:
 
 ``` elisp
 vocab-unknown-face
-vocab-learning-face
+vocab-level-1-face … vocab-level-4-face
 ```
 
 Known words use their ordinary appearance.
@@ -800,14 +825,14 @@ v0.1 is complete when this workflow works:
 Possible progression:
 
 ``` text
-v0.1  arbitrary-buffer vocabulary tracking
-v0.2  translation/definition UI
-v0.3  richer familiarity levels
-v0.4  deeper nov-mode / eww integration
-v0.5  language-specific lemmatization
-v0.6  phrase tracking
-v0.7  review / SRS
-v0.8  statistics
+v0.1  arbitrary-buffer vocabulary tracking          done
+v0.2  translation/definition UI                     done, backend pluggable
+v0.3  richer familiarity levels                     done, four levels
+v0.4  deeper nov-mode / eww integration             done, re-render hooks
+v0.5  language-specific lemmatization               parked
+v0.6  phrase tracking                               done
+v0.7  review / SRS                                  dropped
+v0.8  statistics                                    dropped
 ```
 
 The architectural principle should remain:

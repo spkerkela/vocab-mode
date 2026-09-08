@@ -100,12 +100,13 @@ For the fast reading workflow, `vocab-mode-bind-reading-keys` installs the
 single-key set in `vocab-mode-map`:
 
 ```text
-n    next unknown
-p    previous unknown
-k    mark known
-l    mark learning
-u    mark unknown
-RET  show word status
+n      next unknown
+p      previous unknown
+1-4    mark familiarity level
+k      mark known
+l      mark level 1
+u      mark unknown
+RET    show word status
 ```
 
 ```elisp
@@ -129,7 +130,9 @@ typing is never shadowed. Pass your own keymap to bind them somewhere else.
 | `vocab-mark-unknown`      | Delete the word's stored row, returning it to unknown   |
 | `vocab-next-unknown`      | Jump to the next unknown word, wrapping around          |
 | `vocab-previous-unknown`  | Jump to the previous unknown word, wrapping around      |
-| `vocab-translate-word`    | Show a translation of the word at point                 |
+| `vocab-mark-level`        | Mark the word or phrase with familiarity level 1-4      |
+| `vocab-translate-word`    | Show a translation of the word or phrase at point       |
+| `vocab-forget-translation`| Delete the stored translation of the word at point      |
 | `vocab-refresh-word`      | Refresh every occurrence of one word                    |
 | `vocab-refresh-buffer`    | Rescan the buffer and re-read states from the database  |
 | `vocab-clear-annotations` | Remove every annotation owned by `vocab-mode`           |
@@ -172,24 +175,58 @@ form and the meaning in at most 20 words. No preamble." language)
 (setq vocab-translate-function #'my-vocab-translate-with-gptel)
 ```
 
-Answers are cached per language and normalized word, since lookups can be slow
-or billed and the same word tends to be asked for more than once. A prefix
-argument (`C-u`) asks again; `vocab-clear-translation-cache` forgets everything.
-The cache lives in memory only — nothing is written to the database.
+Answers are stored in the database, keyed by language and normalized word, so a
+word is translated once and stays translated across sessions and machines. An
+in-memory cache sits in front, so a repeated lookup costs not even a query. A
+prefix argument (`C-u`) asks the backend again and replaces what is stored;
+`vocab-forget-translation` deletes one; `vocab-clear-translation-cache` drops
+only the in-memory copies.
+
+Translations survive marking a word known, or unknown again: what a word means
+does not depend on whether you know it. Phrases are translated the same way.
 
 Short answers appear in the echo area, longer ones in a `*vocab-translation*`
 buffer.
 
 ## Vocabulary states
 
-| State      | Stored?              | Appearance             |
-|------------|----------------------|------------------------|
-| `unknown`  | no — absence is the state | `vocab-unknown-face` |
-| `learning` | yes                  | `vocab-learning-face`  |
-| `known`    | yes                  | unchanged              |
+Between unknown and known there are four familiarity levels, so a word can move
+towards known instead of jumping there.
+
+| State     | Stored?                   | Appearance            |
+|-----------|---------------------------|-----------------------|
+| `unknown` | no — absence is the state | `vocab-unknown-face`  |
+| level 1   | yes                       | `vocab-level-1-face`  |
+| level 2   | yes                       | `vocab-level-2-face`  |
+| level 3   | yes                       | `vocab-level-3-face`  |
+| level 4   | yes                       | `vocab-level-4-face`  |
+| `known`   | yes                       | unchanged             |
+
+Unknown words are underlined; the levels are shaded backgrounds that grow
+fainter as the word approaches known, which needs no marking at all. Mark a
+level with `vocab-mark-level` or the digit keys, in either direction — a word
+can drop back down as easily as it climbs.
+
+A database written before levels existed keeps working: its `learning` entries
+read as level 1, and the rows themselves are left untouched.
 
 Scanning never writes to the database. Reading a document with 2,000 unknown
 words creates zero rows; only your explicit marks are stored.
+
+## Phrases
+
+Anything you can select can be marked, so vocabulary is not limited to single
+words. Select `как дела` and press a level, and the phrase becomes an entry of
+its own, found and highlighted wherever it appears afterwards — including
+across a line break, since text wraps where it likes.
+
+Phrases are drawn above the words they cover and the words underneath keep
+their own states, so a phrase you are learning can be made of words you already
+know, or the reverse. With point inside a phrase, the commands act on the
+phrase rather than the single word, since the phrase is what is highlighted.
+
+They need no table of their own: a phrase is an entry whose text has a space in
+it, matched case-insensitively like everything else.
 
 ## Customization
 
@@ -202,9 +239,9 @@ words creates zero rows; only your explicit marks are stored.
 The database and its parent directory are created when first needed, and an
 existing database is never dropped or recreated.
 
-The faces `vocab-unknown-face` and `vocab-learning-face` only set an underline —
-a wavy one for unknown, a straight one for learning — so that the colours of the
-underlying major mode keep showing through. They are defined separately for
+`vocab-unknown-face` sets a wavy underline and the four `vocab-level-N-face`
+faces set progressively fainter backgrounds, so the underlying major mode's
+colours keep showing through in every case. All are defined separately for
 light and dark backgrounds.
 
 ## Compatibility
@@ -245,9 +282,9 @@ The suite uses temporary databases and never touches your real vocabulary file.
 
 ## Out of scope in v0.1
 
-No document importing, translation, dictionary or LLM lookups, EPUB/PDF parsing,
-audio, flashcards or spaced repetition, lemmatization, phrase tracking, encounter
-statistics, or synchronization.
+No document importing, dictionary or LLM backend of its own, EPUB/PDF parsing,
+audio, flashcards or spaced repetition, lemmatization, encounter statistics, or
+synchronization.
 
 ## License
 

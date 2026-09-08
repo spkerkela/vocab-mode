@@ -40,9 +40,21 @@ The parent directory and the database itself are created on demand."
 
 (define-error 'vocab-db-error "vocab-mode database error")
 
-(defconst vocab-db--statuses '(learning known)
-  "Vocabulary states that are stored persistently.
-Absence from the database means `unknown'.")
+(defconst vocab-db-levels 4
+  "Number of familiarity levels between unknown and known.
+Level 1 is a word just met, level `vocab-db-levels' one nearly known.")
+
+(defconst vocab-db--legacy-statuses '(("learning" . 1))
+  "Stored statuses from earlier versions and the level they now mean.
+Rows are read through this map and left untouched on disk, so a database
+written by an older `vocab-mode' keeps working and loses nothing.")
+
+(defun vocab-db-status-p (status)
+  "Return non-nil when STATUS is a state that can be stored.
+That is `known', or a familiarity level from 1 to `vocab-db-levels'.
+Absence from the database means `unknown', which is never stored."
+  (or (eq status 'known)
+      (and (integerp status) (<= 1 status vocab-db-levels))))
 
 (defconst vocab-db--chunk-size 400
   "Maximum number of words per batched lookup query.
@@ -89,6 +101,13 @@ CREATE TABLE IF NOT EXISTS vocabulary (
     word TEXT NOT NULL,
     status TEXT NOT NULL,
     PRIMARY KEY (language, word)
+)")
+  (sqlite-execute db "\
+CREATE TABLE IF NOT EXISTS translations (
+    language TEXT NOT NULL,
+    word TEXT NOT NULL,
+    translation TEXT NOT NULL,
+    PRIMARY KEY (language, word)
 )"))
 
 (defun vocab-db-open (&optional file)
@@ -126,18 +145,23 @@ existing database is never dropped or recreated."
 
 (defun vocab-db--status-string (status)
   "Return the stored string for STATUS, or signal an error."
-  (let ((sym (if (stringp status) (intern status) status)))
-    (unless (memq sym vocab-db--statuses)
-      (signal 'vocab-db-error
-              (list (format "Refusing to store invalid vocabulary status: %S"
-                            status))))
-    (symbol-name sym)))
+  (unless (vocab-db-status-p status)
+    (signal 'vocab-db-error
+            (list (format "Refusing to store invalid vocabulary status: %S"
+                          status))))
+  (if (eq status 'known) "known" (number-to-string status)))
 
-(defun vocab-db--status-symbol (string)
-  "Return the status symbol for STRING, or nil when it is not storable."
-  (and (stringp string)
-       (let ((sym (intern string)))
-         (and (memq sym vocab-db--statuses) sym))))
+(defun vocab-db--status-value (string)
+  "Return the status STRING means, or nil when it means nothing storable.
+Understands the levels and `known' written today, and the statuses of
+earlier versions."
+  (when (stringp string)
+    (cond
+     ((equal string "known") 'known)
+     ((cdr (assoc string vocab-db--legacy-statuses)))
+     ((string-match-p "\\`[0-9]+\\'" string)
+      (let ((level (string-to-number string)))
+        (and (<= 1 level vocab-db-levels) level))))))
 
 (defun vocab-db-get-status (language word &optional file)
   "Return the stored status of WORD in LANGUAGE, or nil when absent.
@@ -145,7 +169,7 @@ A nil result means the word is unknown.  FILE defaults to
 `vocab-database-file'."
   (let ((db (vocab-db-open file)))
     (vocab-db--protect "Reading vocabulary"
-      (vocab-db--status-symbol
+      (vocab-db--status-value
        (caar (sqlite-select
               db "SELECT status FROM vocabulary WHERE language = ? AND word = ?"
               (list language word)))))))
@@ -166,7 +190,7 @@ are deliberately not inserted.  FILE defaults to `vocab-database-file'."
                         db (format "SELECT word, status FROM vocabulary \
 WHERE language = ? AND word IN (%s)" placeholders)
                         (cons language chunk)))
-            (let ((status (vocab-db--status-symbol (cadr row))))
+            (let ((status (vocab-db--status-value (cadr row))))
               (when status (puthash (car row) status table)))))))
     table))
 
@@ -196,6 +220,50 @@ ON CONFLICT (language, word) DO UPDATE SET status = excluded.status"
   (let ((db (vocab-db-open file)))
     (vocab-db--protect "Deleting vocabulary"
       (sqlite-execute db "DELETE FROM vocabulary WHERE language = ? AND word = ?"
+                      (list language word)))))
+
+(defun vocab-db-phrases (language &optional file)
+  "Return the stored multi-word entries of LANGUAGE and their statuses.
+The result is an alist of (PHRASE . STATUS).  A phrase is any entry
+holding a space, so phrases need no table of their own."
+  (let ((db (vocab-db-open file)))
+    (vocab-db--protect "Reading vocabulary"
+      (delq nil
+            (mapcar (lambda (row)
+                      (let ((status (vocab-db--status-value (cadr row))))
+                        (and status (cons (car row) status))))
+                    (sqlite-select
+                     db "SELECT word, status FROM vocabulary \
+WHERE language = ? AND word LIKE '% %' ORDER BY length(word) DESC"
+                     (list language)))))))
+
+;;; Translations
+
+(defun vocab-db-get-translation (language word &optional file)
+  "Return the stored translation of WORD in LANGUAGE, or nil."
+  (let ((db (vocab-db-open file)))
+    (vocab-db--protect "Reading translations"
+      (caar (sqlite-select
+             db "SELECT translation FROM translations \
+WHERE language = ? AND word = ?"
+             (list language word))))))
+
+(defun vocab-db-set-translation (language word translation &optional file)
+  "Store TRANSLATION of WORD in LANGUAGE, replacing any earlier one."
+  (let ((db (vocab-db-open file)))
+    (vocab-db--protect "Writing translations"
+      (sqlite-execute db "\
+INSERT INTO translations (language, word, translation) VALUES (?, ?, ?)
+ON CONFLICT (language, word) DO UPDATE SET translation = excluded.translation"
+                      (list language word translation)))
+    translation))
+
+(defun vocab-db-delete-translation (language word &optional file)
+  "Delete the stored translation of WORD in LANGUAGE."
+  (let ((db (vocab-db-open file)))
+    (vocab-db--protect "Deleting translations"
+      (sqlite-execute db "DELETE FROM translations \
+WHERE language = ? AND word = ?"
                       (list language word)))))
 
 (provide 'vocab-db)

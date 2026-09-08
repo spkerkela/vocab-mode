@@ -45,12 +45,41 @@ Only underlining is used so that the underlying major-mode faces keep
 showing through."
   :group 'vocab)
 
-(defface vocab-learning-face
-  '((((background light)) :underline (:color "#906200" :style line))
-    (((background dark))  :underline (:color "#e3b341" :style line))
+(defface vocab-level-1-face
+  '((((background light)) :background "#ffe08a")
+    (((background dark))  :background "#5c4708")
     (t :underline t))
-  "Face for words the user is currently learning."
+  "Face for a word just met: familiarity level 1, the least known."
   :group 'vocab)
+
+(defface vocab-level-2-face
+  '((((background light)) :background "#ffecb5")
+    (((background dark))  :background "#4a3a0c")
+    (t :underline t))
+  "Face for familiarity level 2."
+  :group 'vocab)
+
+(defface vocab-level-3-face
+  '((((background light)) :background "#fff4d6")
+    (((background dark))  :background "#3a2f10")
+    (t :underline t))
+  "Face for familiarity level 3."
+  :group 'vocab)
+
+(defface vocab-level-4-face
+  '((((background light)) :background "#fffaec")
+    (((background dark))  :background "#2c2513")
+    (t :underline t))
+  "Face for familiarity level 4: nearly known, barely marked."
+  :group 'vocab)
+
+(define-obsolete-face-alias 'vocab-learning-face 'vocab-level-1-face "0.2")
+
+(defconst vocab-level-faces
+  [vocab-level-1-face vocab-level-2-face vocab-level-3-face vocab-level-4-face]
+  "Faces for familiarity levels 1 upwards, in order.
+Unknown words are more prominent than any of them and known words carry
+no face at all, so the highlighting fades out as a word is learned.")
 
 (defcustom vocab-translate-function nil
   "Function that produces a translation or definition, or nil for none.
@@ -129,7 +158,11 @@ For the fast single-key reading workflow, see
     ("l"   . vocab-mark-learning)
     ("u"   . vocab-mark-unknown)
     ("n"   . vocab-next-unknown)
-    ("p"   . vocab-previous-unknown))
+    ("p"   . vocab-previous-unknown)
+    ("1"   . vocab-mark-level)
+    ("2"   . vocab-mark-level)
+    ("3"   . vocab-mark-level)
+    ("4"   . vocab-mark-level))
   "Single-key reading bindings, as an alist of key description and command.
 Installed on demand by `vocab-mode-bind-reading-keys'.")
 
@@ -190,10 +223,25 @@ directly after its last letter.  Punctuation is never included."
 
 (defun vocab-normalize-word (word)
   "Return the normalized form of WORD used as the database key.
-In v0.1 normalization is `downcase' only: `Haus', `haus' and `HAUS' all
-map to \"haus\".  No stemming or lemmatization happens here, but keeping
-it in one function leaves room for language-specific rules later."
-  (and word (downcase word)))
+Normalization is `downcase' plus collapsing whitespace, so `Haus',
+`haus' and `HAUS' all map to \"haus\", and a phrase picks up the same
+key however the text happened to wrap.  No stemming or lemmatization
+happens here, but keeping it in one function leaves room for
+language-specific rules later."
+  (when word
+    (string-trim (replace-regexp-in-string "[ \t\n\r]+" " " (downcase word)))))
+
+(defun vocab-phrase-p (thing)
+  "Return non-nil when THING is a multi-word entry rather than one word."
+  (and thing (string-match-p " " (vocab-normalize-word thing))))
+
+(defun vocab--status-name (status)
+  "Return a human-readable name for STATUS."
+  (pcase status
+    ('unknown "unknown")
+    ('known "known")
+    ((pred integerp) (format "level %d" status))
+    (_ (format "%s" status))))
 
 ;;;; State
 
@@ -229,10 +277,13 @@ to a direct database lookup otherwise."
 ;;;; Annotations
 
 (defun vocab--face (status)
-  "Return the face to use for STATUS, or nil for known words."
+  "Return the face to use for STATUS, or nil when it needs none."
   (pcase status
     ('unknown 'vocab-unknown-face)
-    ('learning 'vocab-learning-face)
+    ('known nil)
+    ((and (pred integerp) level)
+     (and (<= 1 level (length vocab-level-faces))
+          (aref vocab-level-faces (1- level))))
     (_ nil)))
 
 (defun vocab--annotate (beg end word status)
@@ -282,7 +333,61 @@ Existing vocab-mode overlays in the region are replaced."
         (dolist (occurrence (nreverse occurrences))
           (pcase-let ((`(,start ,stop ,word) occurrence))
             (vocab--annotate start stop word
-                             (gethash word vocab--cache 'unknown))))))))
+                             (gethash word vocab--cache 'unknown)))))))
+  ;; Phrases can straddle a line break, so give them the whole lines.
+  (vocab--scan-phrases (save-excursion (goto-char beg) (line-beginning-position))
+                       (save-excursion (goto-char end) (line-end-position))))
+
+(defun vocab--phrase-regexp (phrase)
+  "Return a regexp matching PHRASE, however its words are separated.
+Text wraps, so the words of a phrase may be parted by a line break."
+  (concat "\\b"
+          (mapconcat #'regexp-quote (split-string phrase " " t) "[ \t\n]+")
+          "\\b"))
+
+(defun vocab--phrase-overlays (&optional beg end)
+  "Return the phrase overlays between BEG and END."
+  (seq-filter (lambda (overlay) (overlay-get overlay 'vocab-phrase))
+              (vocab--overlays beg end)))
+
+(defun vocab--scan-phrases (beg end)
+  "Annotate the stored multi-word entries found between BEG and END.
+Phrase overlays sit above the word overlays they cover, so a phrase
+reads as one unit while the words below keep their own states."
+  (save-excursion
+    (save-match-data
+      (mapc #'delete-overlay (vocab--phrase-overlays beg end))
+      (pcase-dolist (`(,phrase . ,status) (vocab-db-phrases vocab-language))
+        (puthash phrase status vocab--cache)
+        (let ((regexp (vocab--phrase-regexp phrase))
+              (case-fold-search t))
+          (goto-char beg)
+          (while (re-search-forward regexp end t)
+            (let ((overlay (vocab--annotate (match-beginning 0) (match-end 0)
+                                            phrase status)))
+              (overlay-put overlay 'vocab-phrase t)
+              (overlay-put overlay 'priority 10))))))))
+
+(defun vocab--phrase-bounds-at-point ()
+  "Return the (BEG . END) bounds of the phrase overlay at point, or nil."
+  (let ((overlay (seq-find (lambda (o) (overlay-get o 'vocab-phrase))
+                           (overlays-at (point)))))
+    (when overlay
+      (cons (overlay-start overlay) (overlay-end overlay)))))
+
+(defun vocab-thing-at-point ()
+  "Return the phrase or word the commands should act on, or nil.
+
+The active region wins, so selecting text and marking it creates a
+multi-word entry.  Failing that, a phrase already annotated at point
+wins over the single word inside it, since that is what is highlighted."
+  (cond
+   ((use-region-p)
+    (buffer-substring-no-properties (region-beginning) (region-end)))
+   ((vocab--phrase-bounds-at-point)
+    (let ((bounds (vocab--phrase-bounds-at-point)))
+      (buffer-substring-no-properties (car bounds) (cdr bounds))))
+   (t (vocab-word-at-point))))
 
 (defun vocab-refresh-word (word)
   "Refresh every occurrence of WORD in the accessible buffer.
@@ -345,32 +450,77 @@ that are about to be replaced wholesale, so scanning each one is waste."
 ;;;; Commands
 
 (defun vocab--mark (status)
-  "Persist STATUS for the word at point and refresh its occurrences.
-STATUS `unknown' deletes the stored row instead of storing a value."
+  "Persist STATUS for the phrase or word at point and refresh it.
+
+STATUS is `known', `unknown', or a familiarity level.  `unknown' deletes
+the stored row rather than storing a value; any translation of the entry
+is kept, since the word means the same whether or not it is known."
   (vocab--ensure-enabled)
-  (let ((word (vocab-word-at-point)))
-    (unless word (user-error "No word at point"))
-    (let ((normalized (vocab-normalize-word word)))
+  (let ((thing (vocab-thing-at-point)))
+    (unless thing (user-error "No word at point"))
+    (let ((normalized (vocab-normalize-word thing)))
+      (when (string-empty-p normalized)
+        (user-error "No word at point"))
       (if (eq status 'unknown)
           (vocab-db-delete-word vocab-language normalized)
         (vocab-db-set-status vocab-language normalized status))
       (puthash normalized status vocab--cache)
-      (vocab-refresh-word normalized)
-      (message "%s — %s" word status))))
+      (deactivate-mark)
+      (if (vocab-phrase-p normalized)
+          ;; A phrase may have just appeared or disappeared, and its
+          ;; overlays span text the word refresh does not consider.
+          (vocab--scan-phrases (point-min) (point-max))
+        (vocab-refresh-word normalized))
+      (message "%s — %s" thing (vocab--status-name status)))))
+
+(defun vocab--read-level ()
+  "Return the familiarity level the user asked for.
+A prefix argument, otherwise the digit key that invoked the command,
+otherwise a prompt."
+  (let ((prefix (and current-prefix-arg
+                     (prefix-numeric-value current-prefix-arg)))
+        (key (and (characterp last-command-event)
+                  (- last-command-event ?0))))
+    (cond
+     ((and prefix (<= 1 prefix vocab-db-levels)) prefix)
+     ((and key (<= 1 key vocab-db-levels)) key)
+     (t (read-number (format "Familiarity level (1-%d): " vocab-db-levels) 1)))))
+
+(defun vocab-mark-level (level)
+  "Mark the phrase or word at point with familiarity LEVEL.
+Level 1 is a word just met and `vocab-db-levels' one nearly known; each
+level is rendered a little more faintly than the one below it."
+  (interactive (list (vocab--read-level)))
+  (unless (vocab-db-status-p level)
+    (user-error "Familiarity level must be between 1 and %d" vocab-db-levels))
+  (vocab--mark level))
 
 (defun vocab-show-word ()
-  "Show the word at point and its vocabulary state in the echo area."
+  "Show the phrase or word at point and its state in the echo area."
   (interactive)
   (vocab--ensure-enabled)
-  (let ((word (vocab-word-at-point)))
-    (if (not word)
+  (let ((thing (vocab-thing-at-point)))
+    (if (not thing)
         (message "No word at point")
-      (message "%s — %s" word (vocab-status word)))))
+      (message "%s — %s" thing (vocab--status-name (vocab-status thing))))))
 
 (defvar vocab--translation-cache (make-hash-table :test #'equal)
-  "Cache of translations, keyed by a (LANGUAGE . NORMALIZED-WORD) cons.
-Lookups can be slow or billed, and the word under the reader's eye tends
-to be asked for more than once.")
+  "In-memory translations, keyed by a (LANGUAGE . NORMALIZED-WORD) cons.
+Sits in front of the database so a repeated lookup costs nothing at all,
+not even a query.")
+
+(defun vocab--translation (language word)
+  "Return the known translation of WORD in LANGUAGE, or nil.
+Consults the session cache, then the database, remembering what it finds."
+  (let ((key (cons language word)))
+    (or (gethash key vocab--translation-cache)
+        (let ((stored (vocab-db-get-translation language word)))
+          (when stored (puthash key stored vocab--translation-cache))))))
+
+(defun vocab--remember-translation (language word translation)
+  "Store TRANSLATION of WORD in LANGUAGE, in the database and the cache."
+  (vocab-db-set-translation language word translation)
+  (puthash (cons language word) translation vocab--translation-cache))
 
 (defun vocab--display-translation (word translation)
   "Display TRANSLATION of WORD, in the echo area or its own buffer.
@@ -393,40 +543,55 @@ argument REFRESH, ask the backend again instead of reusing the cache."
   (vocab--ensure-enabled)
   (unless (functionp vocab-translate-function)
     (user-error "No translation backend; set `vocab-translate-function'"))
-  (let ((word (vocab-word-at-point)))
-    (unless word (user-error "No word at point"))
-    (let* ((key (cons vocab-language (vocab-normalize-word word)))
-           (cached (and (not refresh) (gethash key vocab--translation-cache))))
-      (if cached
-          (vocab--display-translation word cached)
-        (message "Translating %s..." word)
-        (funcall vocab-translate-function word vocab-language
+  (let ((thing (vocab-thing-at-point)))
+    (unless thing (user-error "No word at point"))
+    (let* ((normalized (vocab-normalize-word thing))
+           (language vocab-language)
+           (known (and (not refresh) (vocab--translation language normalized))))
+      (if known
+          (vocab--display-translation thing known)
+        (message "Translating %s..." thing)
+        (funcall vocab-translate-function thing language
                  (lambda (translation)
                    (if (and (stringp translation)
                             (not (string-blank-p translation)))
                        (progn
-                         (puthash key translation vocab--translation-cache)
-                         (vocab--display-translation word translation))
-                     (message "No translation for %s" word))))))))
+                         (vocab--remember-translation language normalized
+                                                      translation)
+                         (vocab--display-translation thing translation))
+                     (message "No translation for %s" thing))))))))
 
 (defun vocab-clear-translation-cache ()
-  "Forget every cached translation."
+  "Drop the in-memory translations, keeping the stored ones.
+The next lookup reads them back from the database."
   (interactive)
   (clrhash vocab--translation-cache)
   (message "Translation cache cleared"))
 
+(defun vocab-forget-translation ()
+  "Delete the stored translation of the phrase or word at point."
+  (interactive)
+  (vocab--ensure-enabled)
+  (let ((thing (vocab-thing-at-point)))
+    (unless thing (user-error "No word at point"))
+    (let ((normalized (vocab-normalize-word thing)))
+      (vocab-db-delete-translation vocab-language normalized)
+      (remhash (cons vocab-language normalized) vocab--translation-cache)
+      (message "Forgot the translation of %s" thing))))
+
 (defun vocab-mark-known ()
-  "Mark the word at point as known, in this buffer and persistently."
+  "Mark the phrase or word at point as known, persistently."
   (interactive)
   (vocab--mark 'known))
 
 (defun vocab-mark-learning ()
-  "Mark the word at point as being learned, in this buffer and persistently."
+  "Mark the phrase or word at point as just met: familiarity level 1."
   (interactive)
-  (vocab--mark 'learning))
+  (vocab--mark 1))
 
 (defun vocab-mark-unknown ()
-  "Mark the word at point as unknown, deleting its stored row."
+  "Mark the phrase or word at point as unknown, deleting its stored row.
+Any translation it has is kept."
   (interactive)
   (vocab--mark 'unknown))
 

@@ -14,9 +14,12 @@
 (require 'vocab-mode)
 
 (defmacro vocab-mode-test--with-db (&rest body)
-  "Run BODY with `vocab-database-file' bound to a fresh temporary database."
+  "Run BODY with `vocab-database-file' bound to a fresh temporary database.
+The in-memory translation cache is emptied too: it outlives any single
+database, so without this a test could answer from an earlier one."
   (declare (indent 0) (debug t))
   `(let* ((vocab-mode-test--dir (make-temp-file "vocab-mode-test" t))
+          (vocab--translation-cache (make-hash-table :test #'equal))
           (vocab-database-file
            (expand-file-name "vocab/vocab.sqlite" vocab-mode-test--dir)))
      (unwind-protect
@@ -179,10 +182,10 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
       (vocab-mode-test--goto-word "Hund")
       (vocab-mark-learning)
       (should (equal (vocab-mode-test--statuses)
-                     '(("Der" . unknown) ("Hund" . learning) ("sieht" . unknown)
-                       ("den" . unknown) ("Hund" . learning))))
-      (should (eq (nth 1 (vocab-mode-test--faces)) 'vocab-learning-face))
-      (should (eq (vocab-db-get-status "german" "hund") 'learning))
+                     '(("Der" . unknown) ("Hund" . 1) ("sieht" . unknown)
+                       ("den" . unknown) ("Hund" . 1))))
+      (should (eq (nth 1 (vocab-mode-test--faces)) 'vocab-level-1-face))
+      (should (eql (vocab-db-get-status "german" "hund") 1))
       (vocab-mark-unknown)
       (should (eq (vocab-status "Hund") 'unknown))
       (should-not (vocab-db-get-status "german" "hund"))
@@ -393,7 +396,7 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
         (should (= 5 (length (vocab--overlays))))
         (vocab-mode-test--goto-word "Hund")
         (vocab-mark-learning)
-        (should (eq (vocab-status "hund") 'learning))
+        (should (eql (vocab-status "hund") 1))
         (vocab-mark-known)
         (should (eq (vocab-status "hund") 'known))
         (vocab-mark-unknown)
@@ -455,6 +458,247 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
         (should (equal (vocab-mode-test--message-of #'vocab-previous-unknown)
                        "No unknown words"))
         (should (= (point) start))))))
+
+;;;; Familiarity levels
+
+(ert-deftest vocab-mode-test-levels-render-differently ()
+  "Each level must get its own face, fading out towards known."
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "eins zwei drei vier fuenf sechs"
+      (vocab-mode-test--goto-word "eins") (vocab-mark-level 1)
+      (vocab-mode-test--goto-word "zwei") (vocab-mark-level 2)
+      (vocab-mode-test--goto-word "drei") (vocab-mark-level 3)
+      (vocab-mode-test--goto-word "vier") (vocab-mark-level 4)
+      (vocab-mode-test--goto-word "fuenf") (vocab-mark-known)
+      (should (equal (mapcar #'cdr (vocab-mode-test--statuses))
+                     '(1 2 3 4 known unknown)))
+      (should (equal (vocab-mode-test--faces)
+                     '(vocab-level-1-face vocab-level-2-face vocab-level-3-face
+                       vocab-level-4-face nil vocab-unknown-face))))))
+
+(ert-deftest vocab-mode-test-levels-persist-and-move-both-ways ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (vocab-mode-test--goto-word "Hund")
+      (vocab-mark-level 1)
+      (should (eql (vocab-db-get-status "german" "hund") 1))
+      (vocab-mark-level 3)
+      (should (eql (vocab-db-get-status "german" "hund") 3))
+      (should (eql (vocab-status "Hund") 3))
+      (vocab-mark-known)
+      (should (eq (vocab-db-get-status "german" "hund") 'known))
+      (vocab-mark-level 2)
+      (should (eql (vocab-db-get-status "german" "hund") 2))
+      (vocab-mark-unknown)
+      (should (eq (vocab-status "Hund") 'unknown)))))
+
+(ert-deftest vocab-mode-test-level-rejects-values-out-of-range ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (vocab-mode-test--goto-word "Hund")
+      (should-error (vocab-mark-level 0) :type 'user-error)
+      (should-error (vocab-mark-level (1+ vocab-db-levels)) :type 'user-error)
+      (should (eq (vocab-status "Hund") 'unknown)))))
+
+(ert-deftest vocab-mode-test-level-comes-from-the-digit-key ()
+  "The digit that invoked the command chooses the level."
+  (let ((current-prefix-arg nil))
+    (let ((last-command-event ?3))
+      (should (eql (vocab--read-level) 3)))
+    (let ((last-command-event ?1))
+      (should (eql (vocab--read-level) 1))))
+  ;; A prefix argument wins over the key.
+  (let ((current-prefix-arg 2) (last-command-event ?4))
+    (should (eql (vocab--read-level) 2))))
+
+(ert-deftest vocab-mode-test-navigation-skips-every-level ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "eins zwei drei vier fuenf"
+      (vocab-mode-test--goto-word "eins") (vocab-mark-level 1)
+      (vocab-mode-test--goto-word "zwei") (vocab-mark-level 2)
+      (vocab-mode-test--goto-word "drei") (vocab-mark-level 3)
+      (vocab-mode-test--goto-word "vier") (vocab-mark-level 4)
+      (goto-char (point-min))
+      (vocab-next-unknown)
+      (should (equal (vocab-word-at-point) "fuenf")))))
+
+;;;; Phrases
+
+(ert-deftest vocab-mode-test-marking-a-region-creates-a-phrase ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Ich weiss nicht was das ist."
+      (goto-char (point-min))
+      (search-forward "weiss nicht")
+      (set-mark (match-beginning 0))
+      (goto-char (match-end 0))
+      (activate-mark)
+      (vocab-mark-level 2)
+      (should (eql (vocab-db-get-status "german" "weiss nicht") 2))
+      (should-not (region-active-p))
+      (let ((phrase (car (vocab--phrase-overlays))))
+        (should phrase)
+        (should (equal (buffer-substring-no-properties
+                        (overlay-start phrase) (overlay-end phrase))
+                       "weiss nicht"))
+        (should (eq (overlay-get phrase 'face) 'vocab-level-2-face))
+        ;; It sits above the words it covers.
+        (should (> (overlay-get phrase 'priority) 0)))
+      ;; The words underneath keep their own state, as in LingQ.
+      (should (eq (vocab-status "weiss") 'unknown))
+      (should (equal (buffer-string) "Ich weiss nicht was das ist.")))))
+
+(ert-deftest vocab-mode-test-phrases-are-found-when-scanning ()
+  "A stored phrase must be annotated in a buffer opened later."
+  (vocab-mode-test--with-db
+    (vocab-db-set-status "russian" "как дела" 2)
+    (vocab-db-set-status "russian" "я не знаю" 'known)
+    (with-temp-buffer
+      (text-mode)
+      (insert "Привет, как дела? Я не знаю.")
+      (setq vocab-language "russian")
+      (vocab-mode 1)
+      (let ((phrases (vocab--phrase-overlays)))
+        (should (= 2 (length phrases)))
+        (should (equal (sort (mapcar (lambda (o)
+                                       (buffer-substring-no-properties
+                                        (overlay-start o) (overlay-end o)))
+                                     phrases)
+                             #'string<)
+                       '("Я не знаю" "как дела")))))))
+
+(ert-deftest vocab-mode-test-phrase-matches-across-a-line-break ()
+  (vocab-mode-test--with-db
+    (vocab-db-set-status "german" "guten tag" 1)
+    (with-temp-buffer
+      (text-mode)
+      (insert "Sie sagte guten
+   Tag zu mir.")
+      (setq vocab-language "german")
+      (vocab-mode 1)
+      (let ((phrase (car (vocab--phrase-overlays))))
+        (should phrase)
+        (should (equal (buffer-substring-no-properties
+                        (overlay-start phrase) (overlay-end phrase))
+                       "guten
+   Tag"))))))
+
+(ert-deftest vocab-mode-test-phrase-is-not-matched-inside-longer-words ()
+  (vocab-mode-test--with-db
+    (vocab-db-set-status "german" "der hund" 1)
+    (with-temp-buffer
+      (text-mode)
+      (insert "wieder hundert Mal.")
+      (setq vocab-language "german")
+      (vocab-mode 1)
+      (should-not (vocab--phrase-overlays)))))
+
+(ert-deftest vocab-mode-test-phrase-at-point-wins-over-the-word ()
+  (vocab-mode-test--with-db
+    (vocab-db-set-status "german" "guten tag" 2)
+    (with-temp-buffer
+      (text-mode)
+      (insert "Guten Tag, Welt.")
+      (setq vocab-language "german")
+      (vocab-mode 1)
+      (vocab-mode-test--goto-word "Tag")
+      (should (equal (vocab-thing-at-point) "Guten Tag"))
+      (should (equal (vocab-mode-test--message-of #'vocab-show-word)
+                     "Guten Tag — level 2"))
+      ;; Outside the phrase the word is what counts.
+      (vocab-mode-test--goto-word "Welt")
+      (should (equal (vocab-thing-at-point) "Welt")))))
+
+(ert-deftest vocab-mode-test-phrase-can-be-promoted-and-removed ()
+  (vocab-mode-test--with-db
+    (vocab-db-set-status "german" "guten tag" 1)
+    (with-temp-buffer
+      (text-mode)
+      (insert "Guten Tag, Welt.")
+      (setq vocab-language "german")
+      (vocab-mode 1)
+      (vocab-mode-test--goto-word "Guten")
+      (vocab-mark-level 4)
+      (should (eql (vocab-db-get-status "german" "guten tag") 4))
+      (should (eq (overlay-get (car (vocab--phrase-overlays)) 'face)
+                  'vocab-level-4-face))
+      (vocab-mark-unknown)
+      (should-not (vocab-db-get-status "german" "guten tag"))
+      ;; Its highlighting goes with it.
+      (should-not (vocab--phrase-overlays))
+      (should (equal (buffer-string) "Guten Tag, Welt.")))))
+
+(ert-deftest vocab-mode-test-phrase-normalization ()
+  (should (equal (vocab-normalize-word "Guten   Tag") "guten tag"))
+  (should (equal (vocab-normalize-word "  Guten
+  Tag ") "guten tag"))
+  (should (vocab-phrase-p "Guten Tag"))
+  (should-not (vocab-phrase-p "Guten"))
+  (should-not (vocab-phrase-p "  Guten  ")))
+
+;;;; Stored translations
+
+(ert-deftest vocab-mode-test-translation-is-stored ()
+  "A translation must outlive the session that fetched it."
+  (vocab-mode-test--with-db
+    (let ((calls 0))
+      (vocab-mode-test--with-buffer "Der Hund."
+        (let ((vocab-translate-function
+               (lambda (_w _l cb)
+                 (setq calls (1+ calls))
+                 (funcall cb "dog"))))
+          (vocab-mode-test--goto-word "Hund")
+          (vocab-translate-word)
+          (should (= calls 1))
+          (should (equal (vocab-db-get-translation "german" "hund") "dog"))))
+      ;; A new session: nothing in memory, everything still in the database.
+      (clrhash vocab--translation-cache)
+      (vocab-db-close-all)
+      (vocab-mode-test--with-buffer "Ein Hund."
+        (let ((vocab-translate-function
+               (lambda (_w _l cb) (setq calls (1+ calls)) (funcall cb "dog"))))
+          (vocab-mode-test--goto-word "Hund")
+          (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                         "Hund — dog"))
+          (should (= calls 1)))))))
+
+(ert-deftest vocab-mode-test-translation-survives-marking-known ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (let ((vocab-translate-function (lambda (_w _l cb) (funcall cb "dog"))))
+        (vocab-mode-test--goto-word "Hund")
+        (vocab-translate-word)
+        (vocab-mark-known)
+        (should (equal (vocab-db-get-translation "german" "hund") "dog"))
+        (vocab-mark-unknown)
+        (should (equal (vocab-db-get-translation "german" "hund") "dog"))
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "Hund — dog"))))))
+
+(ert-deftest vocab-mode-test-forget-translation ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (let ((vocab-translate-function (lambda (_w _l cb) (funcall cb "dog"))))
+        (vocab-mode-test--goto-word "Hund")
+        (vocab-translate-word)
+        (vocab-forget-translation)
+        (should-not (vocab-db-get-translation "german" "hund"))
+        (should-not (gethash '("german" . "hund") vocab--translation-cache))))))
+
+(ert-deftest vocab-mode-test-phrases-can-be-translated ()
+  (vocab-mode-test--with-db
+    (vocab-db-set-status "russian" "как дела" 1)
+    (with-temp-buffer
+      (text-mode)
+      (insert "Привет, как дела?")
+      (setq vocab-language "russian")
+      (vocab-mode 1)
+      (let ((vocab-translate-function
+             (lambda (thing _l cb) (funcall cb (format "<%s>" thing)))))
+        (vocab-mode-test--goto-word "дела")
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "как дела — <как дела>"))
+        (should (equal (vocab-db-get-translation "russian" "как дела")
+                       "<как дела>"))))))
 
 ;;;; Mode line
 
@@ -748,11 +992,13 @@ Binds `vocab-mode-test--prompt-args' to the arguments it was called with."
                (lambda (_w _l cb) (funcall cb "Hund — dog, hound"))))
           (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
                          "Hund — dog, hound")))
+        (vocab-db-delete-translation "german" "hund")
         (clrhash vocab--translation-cache)
         (let ((vocab-translate-function
                (lambda (_w _l cb) (funcall cb "hund: dog"))))
           (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
                          "hund: dog")))
+        (vocab-db-delete-translation "german" "hund")
         (clrhash vocab--translation-cache)
         (let ((vocab-translate-function
                (lambda (_w _l cb) (funcall cb "dog, hound"))))
@@ -786,7 +1032,7 @@ Binds `vocab-mode-test--prompt-args' to the arguments it was called with."
       (vocab-mode-test--goto-word "langsam")
       (should (equal (vocab-mode-test--message-of #'vocab-show-word) "langsam — unknown"))
       (vocab-mark-learning)
-      (should (equal (vocab-mode-test--message-of #'vocab-show-word) "langsam — learning"))
+      (should (equal (vocab-mode-test--message-of #'vocab-show-word) "langsam — level 1"))
       (goto-char (point-max))
       (should (equal (vocab-mode-test--message-of #'vocab-show-word) "No word at point")))))
 

@@ -553,8 +553,9 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
                 (funcall callback (format "%s: dog" word))))
              (vocab--translation-cache (make-hash-table :test #'equal)))
         (vocab-mode-test--goto-word "Hund")
+        ;; The answer already opens with the word, so it is shown as is.
         (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
-                       "Hund — Hund: dog"))
+                       "Hund: dog"))
         ;; The surface form is handed over, not the normalized key.
         (should (equal seen '("Hund" "german")))))))
 
@@ -615,6 +616,27 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
         (vocab-clear-translation-cache)
         (should (= 0 (hash-table-count vocab--translation-cache)))))))
 
+(ert-deftest vocab-mode-test-translate-does-not-echo-the-word-twice ()
+  "Backends that open with the word themselves must not be prefixed again."
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (let ((vocab--translation-cache (make-hash-table :test #'equal)))
+        (vocab-mode-test--goto-word "Hund")
+        (let ((vocab-translate-function
+               (lambda (_w _l cb) (funcall cb "Hund — dog, hound"))))
+          (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                         "Hund — dog, hound")))
+        (clrhash vocab--translation-cache)
+        (let ((vocab-translate-function
+               (lambda (_w _l cb) (funcall cb "hund: dog"))))
+          (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                         "hund: dog")))
+        (clrhash vocab--translation-cache)
+        (let ((vocab-translate-function
+               (lambda (_w _l cb) (funcall cb "dog, hound"))))
+          (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                         "Hund — dog, hound")))))))
+
 (ert-deftest vocab-mode-test-translate-is-language-specific ()
   (vocab-mode-test--with-db
     (let ((vocab--translation-cache (make-hash-table :test #'equal))
@@ -624,7 +646,7 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
       (vocab-mode-test--with-buffer "Die Tür."
         (vocab-mode-test--goto-word "Die")
         (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
-                       "Die — Die in german")))
+                       "Die in german")))
       (with-temp-buffer
         (text-mode)
         (insert "Die Tür.")
@@ -632,7 +654,7 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
         (vocab-mode 1)
         (vocab-mode-test--goto-word "Die")
         (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
-                       "Die — Die in french"))))))
+                       "Die in french"))))))
 
 ;;;; Commands and errors
 

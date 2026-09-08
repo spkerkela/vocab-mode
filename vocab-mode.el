@@ -373,10 +373,15 @@ Lookups can be slow or billed, and the word under the reader's eye tends
 to be asked for more than once.")
 
 (defun vocab--display-translation (word translation)
-  "Display TRANSLATION of WORD, in the echo area or its own buffer."
-  (display-message-or-buffer
-   (format "%s — %s" word (string-trim translation))
-   "*vocab-translation*"))
+  "Display TRANSLATION of WORD, in the echo area or its own buffer.
+WORD is prefixed for context unless the backend already opens with it,
+as dictionaries and language models tend to."
+  (let ((text (string-trim translation)))
+    (display-message-or-buffer
+     (if (string-prefix-p (downcase word) (downcase text))
+         text
+       (format "%s — %s" word text))
+     "*vocab-translation*")))
 
 (defun vocab-translate-word (&optional refresh)
   "Show a translation of the word at point.

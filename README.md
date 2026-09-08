@@ -55,6 +55,9 @@ M-x vocab-mode
 Language: german
 ```
 
+The mode line then reads `Vocab[german]`, so a buffer always says which
+language it is being read in.
+
 The language is asked once per buffer and stays with it, including across
 disabling and re-enabling the mode. Any simple identifier works: `german`,
 `spanish`, `french`, `finnish`. Vocabulary is language-specific, so German

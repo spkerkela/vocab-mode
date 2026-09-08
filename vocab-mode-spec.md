@@ -117,6 +117,9 @@ Implement `vocab-mode` with `define-minor-mode`, conceptually:
 It must be a minor mode, not a major mode. Enabling it must not replace
 the current major mode.
 
+The lighter must name the buffer's target language, for example
+`Vocab[german]`, and follow it if it changes.
+
 It should conceptually work with buffers such as `text-mode`,
 `markdown-mode`, `org-mode`, `nov-mode`, `eww-mode`, and other modes
 exposing readable text. Perfect compatibility with every complex mode is

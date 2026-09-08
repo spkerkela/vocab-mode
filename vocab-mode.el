@@ -473,6 +473,14 @@ Those already in the database, plus any entered earlier this session."
                              (copy-sequence vocab-language-history)))
         #'string<))
 
+(defun vocab--lighter ()
+  "Return the mode-line lighter, naming the language being read.
+Evaluated during redisplay, so it follows `vocab-language' by itself.
+Redefine this function to change how the mode announces itself."
+  (if (and (stringp vocab-language) (not (string-empty-p vocab-language)))
+      (format " Vocab[%s]" vocab-language)
+    " Vocab"))
+
 (defun vocab--read-language ()
   "Prompt for and return the target language of this buffer.
 
@@ -528,7 +536,7 @@ No keys are bound by default; see `vocab-mode-map' and
 `vocab-mode-bind-reading-keys'.
 
 \\{vocab-mode-map}"
-  :lighter " Vocab"
+  :lighter (:eval (vocab--lighter))
   :keymap vocab-mode-map
   :group 'vocab
   (if vocab-mode

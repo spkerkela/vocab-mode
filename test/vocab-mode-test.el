@@ -456,6 +456,49 @@ The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
                        "No unknown words"))
         (should (= (point) start))))))
 
+;;;; Mode line
+
+;; `format-mode-line' returns "" for every construct under -batch, so
+;; these check the lighter and the `minor-mode-alist' entry that carries
+;; it.  Rendering itself was verified in an interactive Emacs, where the
+;; mode line reads "(Text Vocab[german])".
+
+(ert-deftest vocab-mode-test-lighter-names-the-language ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (should (equal (vocab--lighter) " Vocab[german]"))
+      (setq vocab-language "russian")
+      (should (equal (vocab--lighter) " Vocab[russian]")))))
+
+(ert-deftest vocab-mode-test-lighter-is-wired-to-the-mode-line ()
+  "The mode must hand the mode line something it re-evaluates."
+  (should (equal (assq 'vocab-mode minor-mode-alist)
+                 '(vocab-mode (:eval (vocab--lighter))))))
+
+(ert-deftest vocab-mode-test-lighter-without-a-language ()
+  (let ((vocab-language nil))
+    (should (equal (vocab--lighter) " Vocab")))
+  (let ((vocab-language ""))
+    (should (equal (vocab--lighter) " Vocab"))))
+
+(ert-deftest vocab-mode-test-lighter-is-per-buffer ()
+  "Two buffers in different languages must each show their own."
+  (vocab-mode-test--with-db
+    (let ((german (generate-new-buffer "*german*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer german
+              (text-mode)
+              (insert "Der Hund.")
+              (setq vocab-language "german")
+              (vocab-mode 1))
+            (vocab-mode-test--with-buffer "Собака."
+              (setq vocab-language "russian")
+              (should (equal (vocab--lighter) " Vocab[russian]"))
+              (with-current-buffer german
+                (should (equal (vocab--lighter) " Vocab[german]")))))
+        (kill-buffer german)))))
+
 ;;;; Keymap
 
 (ert-deftest vocab-mode-test-no-keys-bound-by-default ()

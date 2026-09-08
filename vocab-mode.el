@@ -52,6 +52,25 @@ showing through."
   "Face for words the user is currently learning."
   :group 'vocab)
 
+(defcustom vocab-translate-function nil
+  "Function that produces a translation or definition, or nil for none.
+
+`vocab-translate-word' calls it with three arguments: the surface WORD
+at point, the buffer's LANGUAGE, and a CALLBACK.  The function must call
+CALLBACK with the translation as a string, or with nil when it has none.
+
+CALLBACK may be called immediately or much later, so a dictionary
+process, a web lookup or an LLM all fit without blocking Emacs:
+
+  (defun my-vocab-translate (word language callback)
+    (funcall callback (my-lookup word language)))
+
+  (setq vocab-translate-function #\='my-vocab-translate)
+
+`vocab-mode' deliberately ships no backend and depends on none."
+  :type '(choice (const :tag "None" nil) function)
+  :group 'vocab)
+
 ;;;; Variables
 
 (defvar vocab-mode)                     ; defined by `define-minor-mode' below
@@ -347,6 +366,49 @@ STATUS `unknown' deletes the stored row instead of storing a value."
     (if (not word)
         (message "No word at point")
       (message "%s — %s" word (vocab-status word)))))
+
+(defvar vocab--translation-cache (make-hash-table :test #'equal)
+  "Cache of translations, keyed by a (LANGUAGE . NORMALIZED-WORD) cons.
+Lookups can be slow or billed, and the word under the reader's eye tends
+to be asked for more than once.")
+
+(defun vocab--display-translation (word translation)
+  "Display TRANSLATION of WORD, in the echo area or its own buffer."
+  (display-message-or-buffer
+   (format "%s — %s" word (string-trim translation))
+   "*vocab-translation*"))
+
+(defun vocab-translate-word (&optional refresh)
+  "Show a translation of the word at point.
+
+The translation comes from `vocab-translate-function', which is nil
+until you configure a backend.  Results are cached; with a prefix
+argument REFRESH, ask the backend again instead of reusing the cache."
+  (interactive "P")
+  (vocab--ensure-enabled)
+  (unless (functionp vocab-translate-function)
+    (user-error "No translation backend; set `vocab-translate-function'"))
+  (let ((word (vocab-word-at-point)))
+    (unless word (user-error "No word at point"))
+    (let* ((key (cons vocab-language (vocab-normalize-word word)))
+           (cached (and (not refresh) (gethash key vocab--translation-cache))))
+      (if cached
+          (vocab--display-translation word cached)
+        (message "Translating %s..." word)
+        (funcall vocab-translate-function word vocab-language
+                 (lambda (translation)
+                   (if (and (stringp translation)
+                            (not (string-blank-p translation)))
+                       (progn
+                         (puthash key translation vocab--translation-cache)
+                         (vocab--display-translation word translation))
+                     (message "No translation for %s" word))))))))
+
+(defun vocab-clear-translation-cache ()
+  "Forget every cached translation."
+  (interactive)
+  (clrhash vocab--translation-cache)
+  (message "Translation cache cleared"))
 
 (defun vocab-mark-known ()
   "Mark the word at point as known, in this buffer and persistently."

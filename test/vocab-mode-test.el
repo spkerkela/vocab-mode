@@ -59,9 +59,11 @@
     captured))
 
 (defun vocab-mode-test--goto-word (word &optional occurrence)
-  "Move point onto the OCCURRENCE-th (default first) WORD of the buffer."
+  "Move point onto the OCCURRENCE-th (default first) WORD of the buffer.
+The search is case-sensitive, so \"HUND\" does not land on \"Hund\"."
   (goto-char (point-min))
-  (search-forward word nil nil (or occurrence 1))
+  (let ((case-fold-search nil))
+    (search-forward word nil nil (or occurrence 1)))
   (goto-char (match-beginning 0)))
 
 ;;;; Normalization
@@ -525,6 +527,112 @@
       (widen)
       (vocab-refresh-buffer)
       (should (= 5 (length (vocab--overlays)))))))
+
+;;;; Translation
+
+(ert-deftest vocab-mode-test-translate-requires-a-backend ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (let ((vocab-translate-function nil))
+        (should-error (vocab-translate-word) :type 'user-error)))))
+
+(ert-deftest vocab-mode-test-translate-requires-a-word ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund.   "
+      (let ((vocab-translate-function (lambda (_w _l cb) (funcall cb "dog"))))
+        (goto-char (point-max))
+        (should-error (vocab-translate-word) :type 'user-error)))))
+
+(ert-deftest vocab-mode-test-translate-passes-word-and-language ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (let* (seen
+             (vocab-translate-function
+              (lambda (word language callback)
+                (setq seen (list word language))
+                (funcall callback (format "%s: dog" word))))
+             (vocab--translation-cache (make-hash-table :test #'equal)))
+        (vocab-mode-test--goto-word "Hund")
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "Hund — Hund: dog"))
+        ;; The surface form is handed over, not the normalized key.
+        (should (equal seen '("Hund" "german")))))))
+
+(ert-deftest vocab-mode-test-translate-is-asynchronous ()
+  "A backend may answer long after the command returned."
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (let* (pending
+             (vocab-translate-function
+              (lambda (_word _language callback) (setq pending callback)))
+             (vocab--translation-cache (make-hash-table :test #'equal)))
+        (vocab-mode-test--goto-word "Hund")
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "Translating Hund..."))
+        (should (functionp pending))
+        ;; The answer arrives later and is displayed then.
+        (should (equal (vocab-mode-test--message-of
+                        (lambda () (funcall pending "dog")))
+                       "Hund — dog"))))))
+
+(ert-deftest vocab-mode-test-translate-handles-no-answer ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund."
+      (let ((vocab-translate-function (lambda (_w _l cb) (funcall cb nil)))
+            (vocab--translation-cache (make-hash-table :test #'equal)))
+        (vocab-mode-test--goto-word "Hund")
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "No translation for Hund"))
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "No translation for Hund"))))))
+
+(ert-deftest vocab-mode-test-translate-caches-and-refreshes ()
+  (vocab-mode-test--with-db
+    (vocab-mode-test--with-buffer "Der Hund und der HUND."
+      (let* ((calls 0)
+             (vocab-translate-function
+              (lambda (_word _language callback)
+                (setq calls (1+ calls))
+                (funcall callback (format "dog #%d" calls))))
+             (vocab--translation-cache (make-hash-table :test #'equal)))
+        (vocab-mode-test--goto-word "Hund")
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "Hund — dog #1"))
+        ;; Asking again reuses the answer rather than paying for it twice.
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "Hund — dog #1"))
+        (should (= calls 1))
+        ;; A differently cased occurrence shares the cache entry.
+        (vocab-mode-test--goto-word "HUND")
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "HUND — dog #1"))
+        (should (= calls 1))
+        ;; A prefix argument asks again.
+        (should (equal (vocab-mode-test--message-of
+                        (lambda () (vocab-translate-word t)))
+                       "HUND — dog #2"))
+        (should (= calls 2))
+        (vocab-clear-translation-cache)
+        (should (= 0 (hash-table-count vocab--translation-cache)))))))
+
+(ert-deftest vocab-mode-test-translate-is-language-specific ()
+  (vocab-mode-test--with-db
+    (let ((vocab--translation-cache (make-hash-table :test #'equal))
+          (vocab-translate-function
+           (lambda (word language callback)
+             (funcall callback (format "%s in %s" word language)))))
+      (vocab-mode-test--with-buffer "Die Tür."
+        (vocab-mode-test--goto-word "Die")
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "Die — Die in german")))
+      (with-temp-buffer
+        (text-mode)
+        (insert "Die Tür.")
+        (setq vocab-language "french")
+        (vocab-mode 1)
+        (vocab-mode-test--goto-word "Die")
+        (should (equal (vocab-mode-test--message-of #'vocab-translate-word)
+                       "Die — Die in french"))))))
 
 ;;;; Commands and errors
 

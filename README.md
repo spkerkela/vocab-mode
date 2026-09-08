@@ -120,6 +120,7 @@ typing is never shadowed. Pass your own keymap to bind them somewhere else.
 | `vocab-mark-unknown`      | Delete the word's stored row, returning it to unknown   |
 | `vocab-next-unknown`      | Jump to the next unknown word, wrapping around          |
 | `vocab-previous-unknown`  | Jump to the previous unknown word, wrapping around      |
+| `vocab-translate-word`    | Show a translation of the word at point                 |
 | `vocab-refresh-word`      | Refresh every occurrence of one word                    |
 | `vocab-refresh-buffer`    | Rescan the buffer and re-read states from the database  |
 | `vocab-clear-annotations` | Remove every annotation owned by `vocab-mode`           |
@@ -130,6 +131,45 @@ of them marks all of them.
 
 Other buffers pick up changes the next time they are enabled, re-enabled, or
 refreshed with `vocab-refresh-buffer`.
+
+## Translation
+
+`vocab-mode` ships no dictionary and depends on no LLM, but it has a socket for
+one. Set `vocab-translate-function` and `M-x vocab-translate-word` starts
+working; leave it nil and the command simply says so.
+
+The function is called with the surface word, the buffer's language, and a
+callback, and must call the callback with a string, or nil when it has nothing.
+It may answer immediately or much later, so a dictionary process, a web lookup
+or an LLM all fit without freezing Emacs:
+
+```elisp
+(defun my-vocab-translate (word language callback)
+  (funcall callback (my-lookup word language)))
+
+(setq vocab-translate-function #'my-vocab-translate)
+```
+
+An asynchronous backend, here [gptel](https://github.com/karthink/gptel):
+
+```elisp
+(defun my-vocab-translate-with-gptel (word language callback)
+  (gptel-request word
+    :system (format "Translate this %s word into English. Give the dictionary \
+form and the meaning in at most 20 words. No preamble." language)
+    :callback (lambda (response _info)
+                (funcall callback (and (stringp response) response)))))
+
+(setq vocab-translate-function #'my-vocab-translate-with-gptel)
+```
+
+Answers are cached per language and normalized word, since lookups can be slow
+or billed and the same word tends to be asked for more than once. A prefix
+argument (`C-u`) asks again; `vocab-clear-translation-cache` forgets everything.
+The cache lives in memory only — nothing is written to the database.
+
+Short answers appear in the echo area, longer ones in a `*vocab-translation*`
+buffer.
 
 ## Vocabulary states
 
